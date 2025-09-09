@@ -23,6 +23,29 @@ def load_cfg():
     except Exception:
         CFG = {}
 
+def render_help():
+    load_cfg()
+    tz = CFG.get("timezone", "Europe/London")
+    files = CFG.get("site", {}).get("ensure_files", ["site/data/table.json", "site/data/live.json"])
+    gotm = CFG.get("gotm", {}) or {}
+    window = gotm.get("vote_window_days", 7)
+    channels = ", ".join(gotm.get("channels", [])) or "—"
+
+    return (
+        "**Agent commands**\n"
+        "- `/help` — show this help\n"
+        "- `/status` — repo + Pages status\n"
+        "- `/ensure site` — ensure site data files (opens PRs if missing)\n"
+        "- `/wire make` — send a test_ping to your Make webhook\n"
+        "- `/gotm open` — (placeholder) open Goal of the Month voting\n"
+        "- `/gotm close` — (placeholder) close voting & compute winner\n\n"
+        "**Current config**\n"
+        f"- timezone: `{tz}`\n"
+        f"- ensure_files: `{', '.join(files)}`\n"
+        f"- GOTM window: `{window}` days\n"
+        f"- GOTM channels: `{channels}`\n"
+    )
+
 # ---------- GitHub helpers ----------
 def api(method, path, **kwargs):
     url = f"{API}/repos/{GH_OWNER}/{GH_REPO}{path}"
