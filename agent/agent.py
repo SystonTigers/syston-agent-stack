@@ -182,8 +182,8 @@ def handle_command(cmd: str, issue_number: int):
     c = (cmd or "").strip().lower()
 
     if c in ("/help", "help"):
-        comment_issue(issue_number, HELP_TEXT)
-        return
+    comment_issue(issue_number, render_help())
+    return
 
     if c in ("/status", "status"):
         pages = latest_pages_build()
