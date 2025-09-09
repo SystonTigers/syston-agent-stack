@@ -1,0 +1,7 @@
+{
+  "github_owner": "YOUR_GITHUB_USERNAME",
+  "github_repo": "YOUR_REPO_NAME",
+  "default_branch": "main",
+  "bot_committer_name": "syston-agent-bot",
+  "bot_committer_email": "bot@example.com"
+}
