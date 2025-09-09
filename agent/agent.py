@@ -111,7 +111,7 @@ def extract_json_after_command(raw: str):
             return json.loads(s[start:end+1]), None
         except Exception as e:
             return None, f"Invalid JSON after command: {e}"
-    return None, "No JSON found. Use `/update live { ... }` or a ```json code block.”
+    return None, "No JSON found. Use `/update live { ... }` or a fenced code block (```json ... ```).”
 
 def open_pr(head_branch, base_branch, title, body=""):
     r = api("POST", "/pulls", json={
