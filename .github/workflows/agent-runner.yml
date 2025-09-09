@@ -7,11 +7,11 @@ on:
 jobs:
   run-agent:
     runs-on: ubuntu-latest
-    env:
+ env:
       TZ: Europe/London
-      GH_OWNER: ${{ github.repository_owner }}
-      GH_REPO: ${{ github.event.repository.name }}
+      GITHUB_REPOSITORY: ${{ github.repository }}   # e.g. SystonTigers/syston-agent-stack
       AGENT_GH_TOKEN: ${{ secrets.AGENT_GH_TOKEN }}
+
     steps:
       - uses: actions/checkout@v4
 
