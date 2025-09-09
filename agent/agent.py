@@ -69,6 +69,24 @@ def comment_issue(issue_number, body):
 def latest_pages_build():
     r = SESSION.get(f"{API}/repos/{GH_OWNER}/{GH_REPO}/pages/builds/latest")
     return r.json() if r.status_code == 200 else None
+def post_to_make(payload: dict):
+    url = os.getenv("MAKE_WEBHOOK_URL")
+    if not url:
+        return False, "MAKE_WEBHOOK_URL secret missing"
+    r = requests.post(url, json=payload, timeout=20)
+    return (200 <= r.status_code < 300), f"HTTP {r.status_code}"
+
+def handle_wire_make(issue_number: int):
+    ok, msg = post_to_make({
+        "type": "test_ping",
+        "from": "GitHubAgent",
+        "repo": f"{GH_OWNER}/{GH_REPO}",
+        "ts": datetime.datetime.utcnow().isoformat() + "Z"
+    })
+    if ok:
+        comment_issue(issue_number, f"✅ Make webhook reached successfully ({msg}).")
+    else:
+        comment_issue(issue_number, f"❌ Could not reach Make webhook ({msg}). Add repo secret `MAKE_WEBHOOK_URL`.")
 
 # ---------- Site ensure helpers ----------
 def ensure_file(default_branch, rel_path, starter_obj):
