@@ -245,6 +245,47 @@ def handle_command(cmd: str, issue_number: int):
     if c.startswith("/gotm close"):
         comment_issue(issue_number, "⛔ GOTM: will close voting and compute winner. Wire Make/Apps Script to execute."); return
 
+# /update live  {json}  or with a ```json``` block
+    if c.startswith("/update live"):
+        obj, err = extract_json_after_command(cmd)
+        if err:
+            comment_issue(issue_number, f"❌ {err}")
+            return
+        repo = get_repo(); default_branch = repo.get("default_branch", "main")
+        try:
+            update_file_json(
+                "site/data/live.json",
+                obj,
+                "chore(agent): update live.json via issue command",
+                default_branch
+            )
+            # (optional) trigger deploy
+            dispatch_workflow("site-deploy.yml", default_branch)
+            comment_issue(issue_number, "✅ Updated `site/data/live.json` and triggered deploy.")
+        except Exception as e:
+            comment_issue(issue_number, f"❌ Failed to update live.json: {e}")
+        return
+
+    # /update table  {json}  (expects whole table.json object)
+    if c.startswith("/update table"):
+        obj, err = extract_json_after_command(cmd)
+        if err:
+            comment_issue(issue_number, f"❌ {err}")
+            return
+        repo = get_repo(); default_branch = repo.get("default_branch", "main")
+        try:
+            update_file_json(
+                "site/data/table.json",
+                obj,
+                "chore(agent): update table.json via issue command",
+                default_branch
+            )
+            dispatch_workflow("site-deploy.yml", default_branch)
+            comment_issue(issue_number, "✅ Updated `site/data/table.json` and triggered deploy.")
+        except Exception as e:
+            comment_issue(issue_number, f"❌ Failed to update table.json: {e}")
+        return
+    
     comment_issue(issue_number, "Unknown command. Try `/help`.")
 
 # ---------- Bootstrap (one-click bring-up) ----------
