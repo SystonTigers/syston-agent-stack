@@ -1,17 +1,11 @@
-import os, base64, json, datetime, sys
-import requests
+import os, base64, json, datetime, sys, requests
 
-"""
-Agent capabilities in this scaffold:
-- Checks GitHub Pages readiness.
-- Ensures /site/data/table.json exists; if missing, opens a PR to add it.
-- Prints a run summary (visible in Actions logs).
+# Prefer the GitHub-provided env (owner/repo), fall back to manual vars
+repo_env = os.getenv("GITHUB_REPOSITORY", "")
+env_owner, env_repo = (repo_env.split("/", 1) + ["", ""])[:2]
 
-Requires repo secret: AGENT_GH_TOKEN (PAT with Contents & PR permissions).
-"""
-
-GH_OWNER = os.getenv("GH_OWNER") or "your-username"
-GH_REPO  = os.getenv("GH_REPO")  or "your-repo"
+GH_OWNER = os.getenv("GH_OWNER") or env_owner or "your-username"
+GH_REPO  = os.getenv("GH_REPO")  or env_repo  or "your-repo"
 TOKEN    = os.getenv("AGENT_GH_TOKEN", "")
 API      = f"https://api.github.com"
 SESSION  = requests.Session()
