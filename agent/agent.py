@@ -1,4 +1,4 @@
-import os, base64, json, datetime, sys, requests, yaml, re
+import os, base64, json, datetime, sys, requests, yaml
 
 # ---------- Environment ----------
 repo_env = os.getenv("GITHUB_REPOSITORY", "")
@@ -50,20 +50,40 @@ def get_contents(path, ref=None):
 
 def put_contents(path, content_bytes, message, branch):
     b64 = base64.b64encode(content_bytes).decode("ascii")
-    r = api("PUT", f"/contents/{path}", json={"message": message, "content": b64, "branch": branch})
+    r = api("PUT", f"/contents/{path}", json={
+        "message": message, "content": b64, "branch": branch
+    })
     r.raise_for_status()
     return r.json()
 
 def open_pr(head_branch, base_branch, title, body=""):
-    r = api("POST", "/pulls", json={"title": title, "head": head_branch, "base": base_branch, "body": body})
+    r = api("POST", "/pulls", json={
+        "title": title, "head": head_branch, "base": base_branch, "body": body
+    })
     r.raise_for_status()
     return r.json()
+
+def merge_pr(pr_number, commit_title=None):
+    """Attempt to merge the PR (squash). Returns (merged_bool, status_text)."""
+    payload = {"merge_method": "squash"}
+    if commit_title:
+        payload["commit_title"] = commit_title
+    r = api("PUT", f"/pulls/{pr_number}/merge", json=payload)
+    if r.status_code in (200, 201):
+        return True, "merged"
+    return False, f"{r.status_code}: {r.text[:150]}"
+
+def dispatch_workflow(workflow_filename: str, ref_branch: str):
+    """Trigger a workflow_dispatch on the given workflow file."""
+    r = api("POST", f"/actions/workflows/{workflow_filename}/dispatches",
+            json={"ref": ref_branch})
+    return r.status_code in (201, 204), r.status_code
 
 def find_issue_by_title(title):
     r = api("GET", f"/issues", params={"state": "open"})
     if r.status_code == 200:
         for it in r.json():
-            if it.get("title","") == title:
+            if it.get("title", "") == title:
                 return it
     return None
 
@@ -99,14 +119,18 @@ def handle_wire_make(issue_number: int):
         "repo": f"{GH_OWNER}/{GH_REPO}",
         "ts": datetime.datetime.utcnow().isoformat() + "Z"
     })
-    if ok:
-        comment_issue(issue_number, f"✅ Make webhook reached successfully ({msg}).")
-    else:
-        comment_issue(issue_number, f"❌ Could not reach Make webhook ({msg}). Add repo secret `MAKE_WEBHOOK_URL`.")
+    comment_issue(issue_number,
+        f"✅ Make webhook reached successfully ({msg})." if ok
+        else f"❌ Could not reach Make webhook ({msg}). Add repo secret `MAKE_WEBHOOK_URL`."
+    )
 
 # ---------- Site ensure helpers ----------
-def ensure_file(default_branch, rel_path, starter_obj):
-    """Ensure a file exists on the default branch; open a PR to add it if missing."""
+def ensure_file(default_branch, rel_path, starter_obj, auto_merge=True):
+    """
+    Ensure a file exists on the default branch; if missing, open a PR adding it.
+    If auto_merge=True, immediately merge the PR (requires PR permissions).
+    Returns tuple: (state, pr_url_or_None) where state in {'exists','pr_opened','merged'}.
+    """
     resp = get_contents(rel_path, ref=default_branch)
     if resp.status_code == 200:
         return "exists", None
@@ -117,12 +141,23 @@ def ensure_file(default_branch, rel_path, starter_obj):
     except Exception:
         pass  # branch may already exist
 
-    put_contents(rel_path, json.dumps(starter_obj, indent=2).encode("utf-8"),
-                 f"chore(agent): add starter {rel_path}", branch)
-    pr = open_pr(branch, default_branch,
-                 f"Agent: add starter {os.path.basename(rel_path)}",
-                 f"Adds minimal `{rel_path}` so the site widget renders.")
-    return "pr_opened", pr.get("html_url")
+    put_contents(
+        rel_path,
+        json.dumps(starter_obj, indent=2).encode("utf-8"),
+        f"chore(agent): add starter {rel_path}",
+        branch
+    )
+    pr = open_pr(
+        branch,
+        default_branch,
+        f"Agent: add starter {os.path.basename(rel_path)}",
+        f"Adds minimal `{rel_path}` so the site widget renders."
+    )
+    pr_url = pr.get("html_url")
+    if auto_merge:
+        merged, _status = merge_pr(pr.get("number"))
+        return ("merged" if merged else "pr_opened"), pr_url
+    return "pr_opened", pr_url
 
 def ensure_site(default_branch):
     """Ensure core site data files exist (configurable via agent/config.yml)."""
@@ -138,11 +173,11 @@ def ensure_site(default_branch):
             }]
         if path.endswith("live.json"):
             starter["text"] = "Waiting for next match…"
-        state, pr_url = ensure_file(default_branch, path, starter)
+        state, pr_url = ensure_file(default_branch, path, starter, auto_merge=True)
         results.append((path, state, pr_url))
-    return results
+    return results  # [(path, 'exists'|'pr_opened'|'merged', pr_url|None)]
 
-# ---------- Help text rendered from config ----------
+# ---------- Help text (reads config) ----------
 def render_help():
     load_cfg()
     tz = CFG.get("timezone", "Europe/London")
@@ -154,7 +189,7 @@ def render_help():
         "**Agent commands**\n"
         "- `/help` — show this help\n"
         "- `/status` — repo + Pages status\n"
-        "- `/ensure site` — ensure site data files (opens PRs if missing)\n"
+        "- `/ensure site` — ensure site data files (opens PRs if missing; auto-merges)\n"
         "- `/wire make` — send a test_ping to your Make webhook\n"
         "- `/gotm open` — (placeholder) open Goal of the Month voting\n"
         "- `/gotm close` — (placeholder) close voting & compute winner\n\n"
@@ -174,8 +209,7 @@ def handle_command(cmd: str, issue_number: int):
     c = (cmd or "").strip().lower()
 
     if c in ("/help", "help"):
-        comment_issue(issue_number, render_help())
-        return
+        comment_issue(issue_number, render_help()); return
 
     if c in ("/status", "status"):
         pages = latest_pages_build()
@@ -184,42 +218,46 @@ def handle_command(cmd: str, issue_number: int):
             f"- Default branch: `{default_branch}`",
             f"- Pages build: `{pages.get('status')}` at `{pages.get('updated_at')}`" if pages else "- Pages build: (not available yet)"
         ]
-        comment_issue(issue_number, "\n".join(msg))
-        return
+        comment_issue(issue_number, "\n".join(msg)); return
 
     if c in ("/ensure", "/ensure site"):
-        res = ensure_site(default_branch)  # list of (path, state, pr)
-        lines = ["**Ensure site files**"]
+        res = ensure_site(default_branch)
+        out = ["**Ensure site files**"]
         for path, state, pr in res:
-            lines.append(f"✅ `{path}` already exists." if state == "exists" else f"🆕 `{path}` added — PR: {pr}")
-        comment_issue(issue_number, "\n".join(lines))
-        return
+            if state == "exists":
+                out.append(f"✅ `{path}` exists")
+            elif state == "merged":
+                out.append(f"✅ `{path}` added & merged")
+            else:
+                out.append(f"🆕 `{path}` added — PR: {pr}")
+        # trigger deploy after ensuring files
+        ok, code = dispatch_workflow("site-deploy.yml", default_branch)
+        out.append(f"\nDeploy trigger: {'✅ sent' if ok else f'❌ ({code})'}")
+        comment_issue(issue_number, "\n".join(out)); return
 
     if c in ("/wire make", "/test make"):
-        handle_wire_make(issue_number)
-        return
+        handle_wire_make(issue_number); return
 
     if c.startswith("/gotm open"):
         window = CFG.get("gotm", {}).get("vote_window_days", 7)
-        comment_issue(issue_number, f"📣 GOTM: will open voting for this month (window {window} days). Hook Make/Apps Script to execute.")
-        return
+        comment_issue(issue_number, f"📣 GOTM: will open voting for this month (window {window} days). Wire Make/Apps Script to execute."); return
 
     if c.startswith("/gotm close"):
-        comment_issue(issue_number, "⛔ GOTM: will close voting and compute winner. Hook Make/Apps Script to execute.")
-        return
+        comment_issue(issue_number, "⛔ GOTM: will close voting and compute winner. Wire Make/Apps Script to execute."); return
 
-    # Fallback
     comment_issue(issue_number, "Unknown command. Try `/help`.")
 
 # ---------- Bootstrap (one-click bring-up) ----------
 def bootstrap():
-    """Auto-fix everything we can and post a single 'Launch checklist' issue."""
+    """Auto-fix everything we can, auto-merge, trigger deploy, then post/update a 'Launch checklist' issue."""
     repo = get_repo()
     default_branch = repo.get("default_branch", "main")
     load_cfg()
 
-    # Ensure site files (PRs if missing)
-    ensured = ensure_site(default_branch)
+    ensured = ensure_site(default_branch)  # auto-merges when needed
+
+    # Trigger deploy regardless (safe if unchanged)
+    deploy_ok, deploy_code = dispatch_workflow("site-deploy.yml", default_branch)
 
     # Test Make webhook
     make_ok, make_msg = post_to_make({
@@ -229,7 +267,7 @@ def bootstrap():
         "ts": datetime.datetime.utcnow().isoformat() + "Z"
     })
 
-    # Pages status
+    # Pages status (informational)
     pages = latest_pages_build()
     pages_line = f"- Pages build: `{pages.get('status')}` at `{pages.get('updated_at')}`" if pages else "- Pages build: (not available yet)"
 
@@ -241,7 +279,15 @@ def bootstrap():
     lines.append("")
     lines.append("### Site data")
     for path, state, pr in ensured:
-        lines.append(f"- {'✅' if state=='exists' else '🆕'} `{path}` — " + ("exists" if state=='exists' else f"PR: {pr}"))
+        if state == "exists":
+            lines.append(f"- ✅ `{path}` — exists")
+        elif state == "merged":
+            lines.append(f"- ✅ `{path}` — added & merged")
+        else:
+            lines.append(f"- 🆕 `{path}` — PR: {pr}")
+    lines.append("")
+    lines.append("### Pages deploy")
+    lines.append(f"- Trigger sent: {'✅' if deploy_ok else f'❌ ({deploy_code})'}")
     lines.append("")
     lines.append("### Make webhook")
     lines.append(f"- {'✅ Reachable' if make_ok else '❌ Not reachable'} ({make_msg})")
@@ -264,7 +310,7 @@ def bootstrap():
     body = "\n".join(lines)
     if existing:
         update_issue_body(existing["number"], body)
-        comment_issue(existing["number"], "🔁 Updated checklist.")
+        comment_issue(existing["number"], "🔁 Checklist updated.")
     else:
         create_issue(title, body)
 
@@ -276,30 +322,28 @@ def main():
         # Respond to ANY issue open/edit or ANY new comment (no label required)
         event_path = os.getenv("GITHUB_EVENT_PATH")
         if not event_path or not os.path.exists(event_path):
-            print("No event payload found.")
-            return
+            print("No event payload found."); return
         with open(event_path, "r", encoding="utf-8") as f:
             event = json.load(f)
 
         if "comment" in event:   # issue_comment
             body = (event["comment"].get("body") or "").strip()
             issue_number = event["issue"]["number"]
-            handle_command(body, issue_number)
-            return
+            handle_command(body, issue_number); return
 
-        if "issue" in event:   # issues opened/edited
+        if "issue" in event:     # issues opened/edited
             first_line = ((event["issue"].get("body") or "").splitlines() or [""])[0]
-            handle_command(first_line, event["issue"]["number"])
-            return
+            handle_command(first_line, event["issue"]["number"]); return
 
         return
 
     if mode == "bootstrap":
-        bootstrap()
-        return
+        bootstrap(); return
 
     # default: scheduled run (site checks)
-    results = ensure_site(get_repo().get("default_branch", "main"))
+    repo = get_repo()
+    default_branch = repo.get("default_branch", "main")
+    results = ensure_site(default_branch)
     for path, state, pr in results:
         print(path, state, pr or "")
     pages = latest_pages_build()
