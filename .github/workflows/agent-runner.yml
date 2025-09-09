@@ -1,0 +1,22 @@
+name: Agent Runner
+on:
+  schedule:
+    - cron: "*/30 07-21 * * *"   # every 30 mins, 07:00–21:00 Europe/London
+  workflow_dispatch: {}           # lets you run it manually
+
+jobs:
+  run-agent:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Run agent
+        run: python agent/agent.py
+        env:
+          # Optional: add a GitHub token later so the agent can open PRs/comments
+          AGENT_GH_TOKEN: ${{ secrets.AGENT_GH_TOKEN }}
