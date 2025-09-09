@@ -1,0 +1,13 @@
+timezone: Europe/London
+brand:
+  primary: "#FFD000"
+  dark: "#111111"
+site:
+  ensure_files: ["site/data/table.json", "site/data/live.json"]
+gotm:
+  vote_window_days: 7
+  channels: ["website","instagram","twitter"]
+apps_script:
+  webapp_url: ""     # (optional) paste your Apps Script Web App URL if you want the agent to call sheet functions
+make:
+  webhook_url: ""    # (optional) you can paste a non-secret placeholder; real secrets go in repo Secrets
