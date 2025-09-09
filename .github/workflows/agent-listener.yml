@@ -1,0 +1,25 @@
+name: Agent Listener
+on:
+  issues:
+    types: [opened, edited, labeled]
+  issue_comment:
+    types: [created]
+
+jobs:
+  handle:
+    if: >
+      github.event_name == 'issue_comment' ||
+      (github.event_name == 'issues' && contains(github.event.issue.labels.*.name, 'agent'))
+    runs-on: ubuntu-latest
+    env:
+      TZ: Europe/London
+      GITHUB_REPOSITORY: ${{ github.repository }}
+      AGENT_GH_TOKEN: ${{ secrets.AGENT_GH_TOKEN }}
+      GITHUB_EVENT_PATH: ${{ github.event_path }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.11" }
+      - run: python -m pip install --upgrade pip requests pyyaml
+      - name: Run agent (listener mode)
+        run: python agent/agent.py --mode listen
