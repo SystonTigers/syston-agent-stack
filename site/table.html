@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>League Table</title>
+  <link rel="stylesheet" href="assets/theme.css" />
+</head>
+<body class="table-page">
+  <div class="league-table">
+    <div class="lt-row header">
+      <div>#</div><div>Team</div><div>P</div><div>W</div><div>D</div>
+      <div>L</div><div>GF</div><div>GA</div><div>GD</div><div>Pts</div>
+    </div>
+    <div id="rows"></div>
+  </div>
+  <script>
+  fetch('data/table.json').then(r => r.json()).then(data => {
+    const rows = document.getElementById('rows');
+    (data.rows || []).forEach((t, i) => {
+      const el = document.createElement('div');
+      el.className = 'lt-row';
+      el.innerHTML = `<div>${i+1}</div><div>${t.team}</div><div>${t.p}</div><div>${t.w}</div><div>${t.d}</div><div>${t.l}</div><div>${t.gf}</div><div>${t.ga}</div><div>${t.gd}</div><div>${t.pts}</div>`;
+      rows.appendChild(el);
+    });
+  }).catch(() => {});
+  </script>
+</body>
+</html>
