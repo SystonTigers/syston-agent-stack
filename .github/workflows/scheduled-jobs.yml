@@ -1,0 +1,12 @@
+name: Scheduled Automations
+on:
+  schedule:
+    - cron: "*/30 07-21 * * *"   # every 30 min, 07:00–21:00 (Europe/London)
+  workflow_dispatch: {}
+
+jobs:
+  refresh-league-table:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: echo "Placeholder scheduled job"
