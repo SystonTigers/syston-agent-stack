@@ -1,24 +1,31 @@
-import os, base64, json, datetime, sys, requests
+import os, base64, json, datetime, sys, requests, yaml, re
 
-# Prefer the GitHub-provided env (owner/repo), fall back to manual vars
+# ---------- Environment ----------
 repo_env = os.getenv("GITHUB_REPOSITORY", "")
 env_owner, env_repo = (repo_env.split("/", 1) + ["", ""])[:2]
-
 GH_OWNER = os.getenv("GH_OWNER") or env_owner or "your-username"
 GH_REPO  = os.getenv("GH_REPO")  or env_repo  or "your-repo"
 TOKEN    = os.getenv("AGENT_GH_TOKEN", "")
-API      = f"https://api.github.com"
-SESSION  = requests.Session()
+API      = "https://api.github.com"
 
+SESSION = requests.Session()
 if TOKEN:
     SESSION.headers.update({"Authorization": f"Bearer {TOKEN}"})
 SESSION.headers.update({"Accept": "application/vnd.github+json"})
 
+CFG = {}
+def load_cfg():
+    global CFG
+    try:
+        with open("agent/config.yml", "r", encoding="utf-8") as f:
+            CFG = yaml.safe_load(f) or {}
+    except Exception:
+        CFG = {}
+
+# ---------- GitHub helpers ----------
 def api(method, path, **kwargs):
     url = f"{API}/repos/{GH_OWNER}/{GH_REPO}{path}"
     r = SESSION.request(method, url, **kwargs)
-    if r.status_code >= 400:
-        print(f"[API {method} {path}] {r.status_code}: {r.text[:300]}")
     return r
 
 def get_repo():
@@ -28,101 +35,142 @@ def get_repo():
 
 def get_branch_sha(branch):
     r = api("GET", f"/git/ref/heads/{branch}")
-    if r.status_code == 200:
-        return r.json()["object"]["sha"]
-    return None
+    return r.json()["object"]["sha"] if r.status_code == 200 else None
 
 def create_branch(from_branch, new_branch):
     sha = get_branch_sha(from_branch)
-    if not sha:
-        raise RuntimeError(f"Base branch not found: {from_branch}")
+    if not sha: raise RuntimeError(f"Base branch not found: {from_branch}")
     r = api("POST", "/git/refs", json={"ref": f"refs/heads/{new_branch}", "sha": sha})
     r.raise_for_status()
-    return True
 
 def get_contents(path, ref=None):
     params = {"ref": ref} if ref else {}
-    r = api("GET", f"/contents/{path}", params=params)
-    return r
+    return api("GET", f"/contents/{path}", params=params)
 
 def put_contents(path, content_bytes, message, branch):
     b64 = base64.b64encode(content_bytes).decode("ascii")
     r = api("PUT", f"/contents/{path}", json={
-        "message": message,
-        "content": b64,
-        "branch": branch
+        "message": message, "content": b64, "branch": branch
     })
     r.raise_for_status()
     return r.json()
 
 def open_pr(head_branch, base_branch, title, body=""):
     r = api("POST", "/pulls", json={
-        "title": title,
-        "head": head_branch,
-        "base": base_branch,
-        "body": body
+        "title": title, "head": head_branch, "base": base_branch, "body": body
     })
     r.raise_for_status()
     return r.json()
 
+def comment_issue(issue_number, body):
+    r = api("POST", f"/issues/{issue_number}/comments", json={"body": body})
+    r.raise_for_status()
+
 def latest_pages_build():
     r = SESSION.get(f"{API}/repos/{GH_OWNER}/{GH_REPO}/pages/builds/latest")
-    if r.status_code == 200:
-        return r.json()
-    return None
+    return r.json() if r.status_code == 200 else None
 
-def ensure_table_json(default_branch):
-    """Ensure /site/data/table.json exists; if not, create a PR adding a minimal file."""
-    target_path = "site/data/table.json"
-    check = get_contents(target_path, ref=default_branch)
-    if check.status_code == 200:
-        print("✅ table.json already exists.")
-        return "exists"
+# ---------- Site ensure helpers ----------
+def ensure_file(default_branch, rel_path, starter_obj):
+    resp = get_contents(rel_path, ref=default_branch)
+    if resp.status_code == 200:
+        return "exists", None
+    branch = f"agent/init-{datetime.datetime.utcnow().strftime('%Y%m%d-%H%M')}"
+    try:
+        create_branch(default_branch, branch)
+    except Exception:
+        pass
+    put_contents(rel_path, json.dumps(starter_obj, indent=2).encode("utf-8"),
+                 f"chore(agent): add starter {rel_path}", branch)
+    pr = open_pr(branch, default_branch, f"Agent: add starter {os.path.basename(rel_path)}",
+                 f"Adds minimal `{rel_path}` so the site widget renders.")
+    return "pr_opened", pr.get("html_url")
 
-    print("ℹ️ table.json missing — preparing PR to add a starter file.")
-    branch = f"agent/init-data-{datetime.datetime.utcnow().strftime('%Y%m%d-%H%M')}"
-    create_branch(default_branch, branch)
+def ensure_site(default_branch):
+    load_cfg()
+    want = CFG.get("site", {}).get("ensure_files", ["site/data/table.json","site/data/live.json"])
+    results = []
+    for path in want:
+        starter = {"updated": datetime.datetime.utcnow().isoformat()+"Z"}
+        if path.endswith("table.json"):
+            starter["rows"] = [{"team":"Syston Town Tigers","p":0,"w":0,"d":0,"l":0,"gf":0,"ga":0,"gd":0,"pts":0}]
+        if path.endswith("live.json"):
+            starter["text"] = "Waiting for next match…"
+        state, pr_url = ensure_file(default_branch, path, starter)
+        results.append((path, state, pr_url))
+    return results
 
-    starter = {
-        "updated": datetime.datetime.utcnow().isoformat() + "Z",
-        "rows": [
-            {"team":"Syston Town Tigers","p":0,"w":0,"d":0,"l":0,"gf":0,"ga":0,"gd":0,"pts":0}
-        ]
-    }
-    put_contents(
-        target_path,
-        json.dumps(starter, indent=2).encode("utf-8"),
-        "chore(agent): add starter site/data/table.json",
-        branch
-    )
-    pr = open_pr(branch, default_branch,
-                 "Agent: add starter table.json for site",
-                 "This PR adds a minimal /site/data/table.json so the league table iframe renders.")
-    print(f"✅ PR opened: #{pr.get('number')} {pr.get('html_url')}")
-    return "pr_opened"
-
-def main():
-    print(f"Agent starting for {GH_OWNER}/{GH_REPO}")
-    if not TOKEN:
-        print("⚠️ No AGENT_GH_TOKEN provided. Agent will run read-only.")
+# ---------- Command handling ----------
+def handle_command(cmd: str, issue_number: int):
     repo = get_repo()
     default_branch = repo.get("default_branch", "main")
-    print(f"- Default branch: {default_branch}")
+    load_cfg()
 
-    # Check Pages build status (informational)
+    if cmd in ("/status", "status"):
+        pages = latest_pages_build()
+        msg = [f"**Agent status for `{GH_OWNER}/{GH_REPO}`**",
+               f"- Default branch: `{default_branch}`",
+               f"- Pages build: `{pages.get('status')}` at `{pages.get('updated_at')}`" if pages else "- Pages build: (not available yet)"]
+        comment_issue(issue_number, "\n".join(msg))
+        return
+
+    if cmd in ("/ensure", "/ensure site"):
+        res = ensure_site(default_branch)
+        lines = ["**Ensure site files**"]
+        for path, state, pr in res:
+            if state == "exists": lines.append(f"✅ `{path}` already exists.")
+            else: lines.append(f"🆕 `{path}` added — PR: {pr}")
+        comment_issue(issue_number, "\n".join(lines))
+        return
+
+    if cmd.startswith("/gotm open"):
+        # plan only (agent tells Make/Apps Script once those endpoints are set)
+        window = CFG.get("gotm", {}).get("vote_window_days", 7)
+        comment_issue(issue_number, f"📣 GOTM: will open voting for this month (window {window} days). Hook Make/Apps Script to execute.")
+        return
+
+    if cmd.startswith("/gotm close"):
+        comment_issue(issue_number, "⛔ GOTM: will close voting and compute winner. Hook Make/Apps Script to execute.")
+        return
+
+    # Fallback
+    comment_issue(issue_number, "I understand: `/status`, `/ensure site`, `/gotm open`, `/gotm close`.")
+
+# ---------- Entrypoint ----------
+def main():
+    mode = (sys.argv[sys.argv.index("--mode")+1] if "--mode" in sys.argv else "").strip()
+    repo = get_repo()
+    default_branch = repo.get("default_branch", "main")
+
+    if mode == "listen":
+        # Parse GitHub event for issue/comment
+        event_path = os.getenv("GITHUB_EVENT_PATH")
+        if not event_path or not os.path.exists(event_path):
+            print("No event payload found.")
+            return
+        with open(event_path, "r", encoding="utf-8") as f:
+            event = json.load(f)
+        if "comment" in event:   # issue_comment
+            body = event["comment"]["body"].strip()
+            issue_number = event["issue"]["number"]
+            handle_command(body.lower(), issue_number)
+        elif "issue" in event:   # issues opened/edited/labeled
+            issue = event["issue"]
+            if any(l["name"].lower()=="agent" for l in issue.get("labels", [])):
+                body = issue.get("body","").strip().splitlines()[0].lower()
+                handle_command(body, issue["number"])
+        return
+
+    # default: scheduled run (site checks)
+    results = ensure_site(default_branch)
+    for path, state, pr in results:
+        print(path, state, pr or "")
     pages = latest_pages_build()
-    if pages:
-        print(f"- Pages latest build: {pages.get('status')} at {pages.get('updated_at')}")
-    else:
-        print("- Pages build info not available yet (enable Pages via Settings → Pages).")
-
-    # Ensure data file exists (opens PR if missing)
-    outcome = ensure_table_json(default_branch)
-
-    print(f"Run complete. Outcome: {outcome}")
+    print("Pages:", (pages or {}).get("status"))
 
 if __name__ == "__main__":
     try:
+        load_cfg()
         main()
     except Exception as e:
         print("❌ Agent error:", e)
