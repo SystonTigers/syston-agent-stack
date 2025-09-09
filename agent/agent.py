@@ -151,6 +151,10 @@ def handle_command(cmd: str, issue_number: int):
         comment_issue(issue_number, "⛔ GOTM: will close voting and compute winner. Hook Make/Apps Script to execute.")
         return
 
+        if cmd in ("/wire make", "/test make"):
+        handle_wire_make(issue_number)
+        return
+
     # Fallback
     comment_issue(issue_number, "I understand: `/status`, `/ensure site`, `/gotm open`, `/gotm close`.")
 
