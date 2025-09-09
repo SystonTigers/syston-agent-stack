@@ -15,6 +15,7 @@ SESSION.headers.update({"Accept": "application/vnd.github+json"})
 
 CFG = {}
 def load_cfg():
+    """Load optional agent/config.yml to customize behavior."""
     global CFG
     try:
         with open("agent/config.yml", "r", encoding="utf-8") as f:
@@ -25,8 +26,7 @@ def load_cfg():
 # ---------- GitHub helpers ----------
 def api(method, path, **kwargs):
     url = f"{API}/repos/{GH_OWNER}/{GH_REPO}{path}"
-    r = SESSION.request(method, url, **kwargs)
-    return r
+    return SESSION.request(method, url, **kwargs)
 
 def get_repo():
     r = SESSION.get(f"{API}/repos/{GH_OWNER}/{GH_REPO}")
@@ -39,7 +39,8 @@ def get_branch_sha(branch):
 
 def create_branch(from_branch, new_branch):
     sha = get_branch_sha(from_branch)
-    if not sha: raise RuntimeError(f"Base branch not found: {from_branch}")
+    if not sha:
+        raise RuntimeError(f"Base branch not found: {from_branch}")
     r = api("POST", "/git/refs", json={"ref": f"refs/heads/{new_branch}", "sha": sha})
     r.raise_for_status()
 
@@ -69,6 +70,8 @@ def comment_issue(issue_number, body):
 def latest_pages_build():
     r = SESSION.get(f"{API}/repos/{GH_OWNER}/{GH_REPO}/pages/builds/latest")
     return r.json() if r.status_code == 200 else None
+
+# ---------- Make webhook test ----------
 def post_to_make(payload: dict):
     url = os.getenv("MAKE_WEBHOOK_URL")
     if not url:
@@ -90,33 +93,62 @@ def handle_wire_make(issue_number: int):
 
 # ---------- Site ensure helpers ----------
 def ensure_file(default_branch, rel_path, starter_obj):
+    """Ensure a file exists on the default branch; open a PR to add it if missing."""
     resp = get_contents(rel_path, ref=default_branch)
     if resp.status_code == 200:
         return "exists", None
+
     branch = f"agent/init-{datetime.datetime.utcnow().strftime('%Y%m%d-%H%M')}"
     try:
         create_branch(default_branch, branch)
     except Exception:
+        # branch may already exist from a prior step; ignore
         pass
-    put_contents(rel_path, json.dumps(starter_obj, indent=2).encode("utf-8"),
-                 f"chore(agent): add starter {rel_path}", branch)
-    pr = open_pr(branch, default_branch, f"Agent: add starter {os.path.basename(rel_path)}",
-                 f"Adds minimal `{rel_path}` so the site widget renders.")
+
+    put_contents(
+        rel_path,
+        json.dumps(starter_obj, indent=2).encode("utf-8"),
+        f"chore(agent): add starter {rel_path}",
+        branch
+    )
+    pr = open_pr(
+        branch,
+        default_branch,
+        f"Agent: add starter {os.path.basename(rel_path)}",
+        f"Adds minimal `{rel_path}` so the site widget renders."
+    )
     return "pr_opened", pr.get("html_url")
 
 def ensure_site(default_branch):
+    """Ensure core site data files exist (configurable via agent/config.yml)."""
     load_cfg()
-    want = CFG.get("site", {}).get("ensure_files", ["site/data/table.json","site/data/live.json"])
+    want = CFG.get("site", {}).get("ensure_files", ["site/data/table.json", "site/data/live.json"])
     results = []
     for path in want:
-        starter = {"updated": datetime.datetime.utcnow().isoformat()+"Z"}
+        starter = {"updated": datetime.datetime.utcnow().isoformat() + "Z"}
         if path.endswith("table.json"):
-            starter["rows"] = [{"team":"Syston Town Tigers","p":0,"w":0,"d":0,"l":0,"gf":0,"ga":0,"gd":0,"pts":0}]
+            starter["rows"] = [{
+                "team": "Syston Town Tigers",
+                "p": 0, "w": 0, "d": 0, "l": 0,
+                "gf": 0, "ga": 0, "gd": 0, "pts": 0
+            }]
         if path.endswith("live.json"):
             starter["text"] = "Waiting for next match…"
         state, pr_url = ensure_file(default_branch, path, starter)
         results.append((path, state, pr_url))
-    return results
+    return results  # list of tuples: (path, state, pr_url_or_None)
+
+# ---------- Help text ----------
+HELP_TEXT = """**Agent commands**
+- `/help` — show this help
+- `/status` — repo + Pages status
+- `/ensure site` — ensure site/data/table.json and site/data/live.json (opens PRs if missing)
+- `/wire make` (alias `/test make`) — send a test_ping to your Make webhook
+- `/gotm open` — (placeholder) open Goal of the Month voting
+- `/gotm close` — (placeholder) close voting and compute winner
+
+Tip: run commands as the first line of a new issue body, or as a comment on any issue.
+"""
 
 # ---------- Command handling ----------
 def handle_command(cmd: str, issue_number: int):
@@ -124,66 +156,77 @@ def handle_command(cmd: str, issue_number: int):
     default_branch = repo.get("default_branch", "main")
     load_cfg()
 
-    if cmd in ("/status", "status"):
+    c = (cmd or "").strip().lower()
+
+    if c in ("/help", "help"):
+        comment_issue(issue_number, HELP_TEXT)
+        return
+
+    if c in ("/status", "status"):
         pages = latest_pages_build()
-        msg = [f"**Agent status for `{GH_OWNER}/{GH_REPO}`**",
-               f"- Default branch: `{default_branch}`",
-               f"- Pages build: `{pages.get('status')}` at `{pages.get('updated_at')}`" if pages else "- Pages build: (not available yet)"]
+        msg = [
+            f"**Agent status for `{GH_OWNER}/{GH_REPO}`**",
+            f"- Default branch: `{default_branch}`",
+            f"- Pages build: `{pages.get('status')}` at `{pages.get('updated_at')}`" if pages else "- Pages build: (not available yet)"
+        ]
         comment_issue(issue_number, "\n".join(msg))
         return
 
-    if cmd in ("/ensure", "/ensure site"):
-        res = ensure_site(default_branch)
+    if c in ("/ensure", "/ensure site"):
+        res = ensure_site(default_branch)  # list of (path, state, pr)
         lines = ["**Ensure site files**"]
         for path, state, pr in res:
-            if state == "exists": lines.append(f"✅ `{path}` already exists.")
-            else: lines.append(f"🆕 `{path}` added — PR: {pr}")
+            lines.append(f"✅ `{path}` already exists." if state == "exists" else f"🆕 `{path}` added — PR: {pr}")
         comment_issue(issue_number, "\n".join(lines))
         return
 
-    if cmd.startswith("/gotm open"):
-        # plan only (agent tells Make/Apps Script once those endpoints are set)
+    if c in ("/wire make", "/test make"):
+        handle_wire_make(issue_number)
+        return
+
+    if c.startswith("/gotm open"):
         window = CFG.get("gotm", {}).get("vote_window_days", 7)
         comment_issue(issue_number, f"📣 GOTM: will open voting for this month (window {window} days). Hook Make/Apps Script to execute.")
         return
 
-    if cmd.startswith("/gotm close"):
+    if c.startswith("/gotm close"):
         comment_issue(issue_number, "⛔ GOTM: will close voting and compute winner. Hook Make/Apps Script to execute.")
         return
 
-        if cmd in ("/wire make", "/test make"):
-        handle_wire_make(issue_number)
-        return
-
     # Fallback
-    comment_issue(issue_number, "I understand: `/status`, `/ensure site`, `/gotm open`, `/gotm close`.")
+    comment_issue(issue_number, "Unknown command. Try `/help`.")
 
 # ---------- Entrypoint ----------
 def main():
     mode = (sys.argv[sys.argv.index("--mode")+1] if "--mode" in sys.argv else "").strip()
-    repo = get_repo()
-    default_branch = repo.get("default_branch", "main")
 
     if mode == "listen":
-        # Parse GitHub event for issue/comment
+        # Respond to ANY issue open/edit or ANY new comment (no label required)
         event_path = os.getenv("GITHUB_EVENT_PATH")
         if not event_path or not os.path.exists(event_path):
             print("No event payload found.")
             return
         with open(event_path, "r", encoding="utf-8") as f:
             event = json.load(f)
+
+        # Any new comment → treat comment text as a command
         if "comment" in event:   # issue_comment
-            body = event["comment"]["body"].strip()
+            body = (event["comment"].get("body") or "").strip()
             issue_number = event["issue"]["number"]
-            handle_command(body.lower(), issue_number)
-        elif "issue" in event:   # issues opened/edited/labeled
-            issue = event["issue"]
-            if any(l["name"].lower()=="agent" for l in issue.get("labels", [])):
-                body = issue.get("body","").strip().splitlines()[0].lower()
-                handle_command(body, issue["number"])
+            handle_command(body, issue_number)
+            return
+
+        # Any issue open/edit → first line of body is the command (if any)
+        if "issue" in event:   # issues opened/edited
+            first_line = ((event["issue"].get("body") or "").splitlines() or [""])[0]
+            handle_command(first_line, event["issue"]["number"])
+            return
+
         return
 
     # default: scheduled run (site checks)
+    repo = get_repo()
+    default_branch = repo.get("default_branch", "main")
     results = ensure_site(default_branch)
     for path, state, pr in results:
         print(path, state, pr or "")
