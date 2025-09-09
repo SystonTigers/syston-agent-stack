@@ -56,6 +56,63 @@ def put_contents(path, content_bytes, message, branch):
     r.raise_for_status()
     return r.json()
 
+def get_file_sha(path, ref):
+    """Return current blob SHA for a file on a branch (needed to update)."""
+    r = get_contents(path, ref=ref)
+    if r.status_code == 200:
+        return r.json().get("sha")
+    return None
+
+def update_file_text(path, text, message, branch):
+    """Create or update a text file on a branch (UTF-8)."""
+    existing_sha = get_file_sha(path, branch)
+    b64 = base64.b64encode(text.encode("utf-8")).decode("ascii")
+    body = {"message": message, "content": b64, "branch": branch}
+    if existing_sha:
+        body["sha"] = existing_sha
+    r = api("PUT", f"/contents/{path}", json=body)
+    r.raise_for_status()
+    return r.json()
+
+def update_file_json(path, obj, message, branch):
+    """Validate + pretty-write JSON to path."""
+    # ensure obj is JSON-serializable
+    text = json.dumps(obj, indent=2, ensure_ascii=False)
+    return update_file_text(path, text, message, branch)
+
+def extract_json_after_command(raw: str):
+    """
+    Accept either:
+      /update live { ...json... }
+      /update live ```json ... ```
+    Returns (obj, error_str_or_None)
+    """
+    s = raw.strip()
+    # fenced block first
+    if "```" in s:
+        # prefer ```json ... ``` but accept plain ```
+        parts = s.split("```", 2)
+        if len(parts) >= 3:
+            candidate = parts[1]
+            # handle ```json
+            if candidate.strip().lower().startswith("json"):
+                payload = parts[2].rsplit("```", 1)[0] if "```" in parts[2] else parts[2]
+            else:
+                payload = parts[1]
+            try:
+                return json.loads(payload), None
+            except Exception as e:
+                return None, f"Invalid JSON in code block: {e}"
+    # inline { ... }
+    start = s.find("{")
+    end = s.rfind("}")
+    if start != -1 and end != -1 and end > start:
+        try:
+            return json.loads(s[start:end+1]), None
+        except Exception as e:
+            return None, f"Invalid JSON after command: {e}"
+    return None, "No JSON found. Use `/update live { ... }` or a ```json code block.”
+
 def open_pr(head_branch, base_branch, title, body=""):
     r = api("POST", "/pulls", json={
         "title": title, "head": head_branch, "base": base_branch, "body": body
