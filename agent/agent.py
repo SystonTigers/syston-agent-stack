@@ -84,26 +84,34 @@ def extract_json_after_command(raw: str):
     """
     Accept either:
       /update live { ...json... }
-      /update live ```json ... ```
-    Returns (obj, error_str_or_None)
+      /update live  (followed by a fenced code block):
+        ```json
+        { ... }
+        ```
+    Returns: (obj, error_message_or_None)
     """
-    s = raw.strip()
-    # fenced block first
+    s = (raw or "").strip()
+
+    # Prefer fenced code block first
     if "```" in s:
-        # prefer ```json ... ``` but accept plain ```
+        # split only on the first two fences to keep payload intact
         parts = s.split("```", 2)
         if len(parts) >= 3:
-            candidate = parts[1]
-            # handle ```json
-            if candidate.strip().lower().startswith("json"):
-                payload = parts[2].rsplit("```", 1)[0] if "```" in parts[2] else parts[2]
+            first = parts[1].strip().lower()
+            # handle ```json ... ``` or plain ``` ... ```
+            if first.startswith("json"):
+                payload = parts[2]
             else:
                 payload = parts[1]
+            # if a trailing fence exists, trim to it
+            if "```" in payload:
+                payload = payload.split("```", 1)[0]
             try:
                 return json.loads(payload), None
             except Exception as e:
                 return None, f"Invalid JSON in code block: {e}"
-    # inline { ... }
+
+    # Inline JSON on the same line as the command
     start = s.find("{")
     end = s.rfind("}")
     if start != -1 and end != -1 and end > start:
@@ -111,7 +119,9 @@ def extract_json_after_command(raw: str):
             return json.loads(s[start:end+1]), None
         except Exception as e:
             return None, f"Invalid JSON after command: {e}"
-    return None, "No JSON found. Use `/update live { ... }` or a fenced code block (```json ... ```).”
+
+    return None, "No JSON found. Use `/update live { ... }` or a fenced code block like: ```json ... ```”
+
 
 def open_pr(head_branch, base_branch, title, body=""):
     r = api("POST", "/pulls", json={
