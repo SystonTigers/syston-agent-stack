@@ -464,6 +464,36 @@ def handle_command(cmd: str, issue_number: int):
         except Exception as e:
             comment_issue(issue_number, f"❌ Failed to update table.json: {e}")
         return
+
+      if c.startswith("/setup apps"):
+        default_branch = get_repo().get("default_branch","main")
+        try:
+            setup_apps_script_files(default_branch)
+            comment_issue(issue_number,
+                "✅ Apps Script files added in `apps_script/`.\n\n"
+                "Deploy steps:\n"
+                "1) Open Google Sheet → Extensions → Apps Script → paste `Code.gs` and `appsscript.json` from repo.\n"
+                "2) Deploy → New deployment → Web app (execute as *Me*, access *Anyone with the link*).\n"
+                "3) (Optional) Add the Web App URL into repo secret `APPS_WEBAPP_URL`.")
+        except Exception as e:
+            comment_issue(issue_number, f"❌ Failed to write Apps Script files: {e}")
+        return
+
+    if c.startswith("/setup make"):
+        default_branch = get_repo().get("default_branch","main")
+        try:
+            setup_make_blueprints(default_branch)
+            comment_issue(issue_number,
+                "✅ Make blueprints added in `make/blueprints/`.\n\n"
+                "Import steps:\n"
+                "1) In Make.com, Scenarios → Import blueprint → upload `make/blueprints/gotm.json` and `make/blueprints/live.json`.\n"
+                "2) Authorize Google Sheets and GitHub modules when prompted.\n"
+                "3) In the HTTP module body, replace `REPLACE_OWNER/REPLACE_REPO/REPLACE_ISSUE` with this repo and a control issue number.\n"
+                "4) Copy each scenario’s Custom Webhook URL into **repo secret** `MAKE_WEBHOOK_URL` (or keep your existing one).\n"
+                "5) Run the scenario once to initialize.")
+        except Exception as e:
+            comment_issue(issue_number, f"❌ Failed to write Make blueprints: {e}")
+        return
     
     comment_issue(issue_number, "Unknown command. Try `/help`.")
 
