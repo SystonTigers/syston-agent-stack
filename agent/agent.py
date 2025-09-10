@@ -5,7 +5,7 @@ repo_env = os.getenv("GITHUB_REPOSITORY", "")
 env_owner, env_repo = (repo_env.split("/", 1) + ["", ""])[:2]
 GH_OWNER = os.getenv("GH_OWNER") or env_owner or "your-username"
 GH_REPO  = os.getenv("GH_REPO")  or env_repo  or "your-repo"
-TOKEN    = os.getenv("AGENT_GH_TOKEN", "")
+TOKEN = os.getenv("AGENT_GH_TOKEN") or os.getenv("GITHUB_TOKEN", "")
 API      = "https://api.github.com"
 
 SESSION = requests.Session()
