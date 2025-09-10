@@ -9,23 +9,26 @@ on:
 jobs:
   agent-listen:
     runs-on: ubuntu-latest
+
+    # ✅ grant needed rights to GITHUB_TOKEN for this job
+    permissions:
+      contents: write
+      pull-requests: write
+      issues: write
+      actions: write
+
     env:
       TZ: Europe/London
       GITHUB_REPOSITORY: ${{ github.repository }}
-      AGENT_GH_TOKEN: ${{ secrets.AGENT_GH_TOKEN }}
+      # ✅ use the built-in token instead of your PAT
+      AGENT_GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       MAKE_WEBHOOK_URL: ${{ secrets.MAKE_WEBHOOK_URL }}
 
     steps:
-      - name: Checkout repo
-        uses: actions/checkout@v4
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-
-      - name: Install dependencies
-        run: python -m pip install --upgrade pip requests pyyaml
-
+      - run: python -m pip install --upgrade pip requests pyyaml
       - name: Run agent in listen mode
         run: python agent/agent.py --mode listen
