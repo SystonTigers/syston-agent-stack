@@ -1,10 +1,11 @@
+# agent/agent.py
 import os, base64, json, datetime, sys, requests, yaml
 
-# ===== Apps Script + Make blueprint constants (ADD #1) =====
+# ===== Apps Script + Make blueprint constants =====
 APPS_SCRIPT_CODE_GS = r"""/* Apps Script Web App (listener) */
 function doPost(e) {
   try {
-    const body = JSON.parse(e.postData.contents || "{}");
+    const body = JSON.parse(e.postData && e.postData.contents ? e.postData.contents : "{}");
     const type = (body.type || "").toLowerCase();
     const now = new Date().toISOString();
 
@@ -61,22 +62,21 @@ APPS_SCRIPT_README = r"""# Apps Script Web App (Listener)
 ## Deploy (3 steps)
 1. Create a new Google Apps Script project attached to your target Google Sheet.
 2. Add `Code.gs` and `appsscript.json` (from this folder).
-3. Deploy > **New deployment** > **Web app**
-   - Execute as: **Me**
-   - Who has access: **Anyone with the link**
-   - Copy the **Web app URL** and put it in your repo secret `APPS_WEBAPP_URL` (optional).
+3. Deploy > New deployment > Web app
+   - Execute as: Me
+   - Who has access: Anyone with the link
+   - Copy the Web app URL and put it in repo secret APPS_WEBAPP_URL (optional).
 
-### What it does
-- `test_ping` returns `{ok:true}` (health check).
-- `gotm_vote` appends a row to `GOTM_Votes` sheet.
-- `live_update` appends a row to `LiveLog` sheet.
+What it does:
+- type=test_ping → {ok:true}
+- type=gotm_vote → appends to GOTM_Votes
+- type=live_update → appends to LiveLog
 
-### Optional
-- In **Project Settings → Script properties**, set `MAKE_WEBHOOK_URL` to enable `postToMake(payload)`.
+Optional: in Project Settings → Script properties set MAKE_WEBHOOK_URL to enable postToMake(payload).
 """
 
 MAKE_BLUEPRINT_GOTM = r"""{
-  "name": "GOTM votes → Google Sheets",
+  "name": "GOTM votes \u2192 Google Sheets",
   "version": 1,
   "modules": [
     {"id": 1, "name": "Webhook", "type": "hook", "metadata": {"label": "Custom Webhook (gotm_vote)"}},
@@ -90,7 +90,7 @@ MAKE_BLUEPRINT_GOTM = r"""{
 """
 
 MAKE_BLUEPRINT_LIVE = r"""{
-  "name": "Live update → GitHub → Deploy",
+  "name": "Live update \u2192 GitHub \u2192 Deploy",
   "version": 1,
   "modules": [
     {"id": 1, "name": "Webhook", "type": "hook", "metadata": {"label": "Custom Webhook (live_update)"}},
@@ -105,7 +105,7 @@ MAKE_BLUEPRINT_LIVE = r"""{
   "links": [{"from_module":1,"to_module":2}]
 }
 """
-# ===== End of ADD #1 =====
+# ===== End constants =====
 
 # ---------- Environment ----------
 repo_env = os.getenv("GITHUB_REPOSITORY", "")
@@ -157,21 +157,17 @@ def get_contents(path, ref=None):
 
 def put_contents(path, content_bytes, message, branch):
     b64 = base64.b64encode(content_bytes).decode("ascii")
-    r = api("PUT", f"/contents/{path}", json={
-        "message": message, "content": b64, "branch": branch
-    })
+    r = api("PUT", f"/contents/{path}", json={"message": message, "content": b64, "branch": branch})
     r.raise_for_status()
     return r.json()
 
 def get_file_sha(path, ref):
-    """Return current blob SHA for a file on a branch (needed to update)."""
     r = get_contents(path, ref=ref)
     if r.status_code == 200:
         return r.json().get("sha")
     return None
 
 def update_file_text(path, text, message, branch):
-    """Create or update a text file on a branch (UTF-8)."""
     existing_sha = get_file_sha(path, branch)
     b64 = base64.b64encode(text.encode("utf-8")).decode("ascii")
     body = {"message": message, "content": b64, "branch": branch}
@@ -181,69 +177,16 @@ def update_file_text(path, text, message, branch):
     r.raise_for_status()
     return r.json()
 
-def repo_write_text(path, text, message, branch):
-    return update_file_text(path, text, message, branch)
-
-def setup_apps_script_files(default_branch):
-    repo_write_text("apps_script/Code.gs", APPS_SCRIPT_CODE_GS, "chore(agent): add Apps Script listener Code.gs", default_branch)
-    repo_write_text("apps_script/appsscript.json", APPS_SCRIPT_MANIFEST, "chore(agent): add Apps Script manifest", default_branch)
-    repo_write_text("apps_script/README.md", APPS_SCRIPT_README, "docs(agent): add Apps Script README", default_branch)
-
-def setup_make_blueprints(default_branch):
-    repo_write_text("make/blueprints/gotm.json", MAKE_BLUEPRINT_GOTM, "chore(agent): add Make blueprint (GOTM)", default_branch)
-    repo_write_text("make/blueprints/live.json", MAKE_BLUEPRINT_LIVE, "chore(agent): add Make blueprint (Live→GitHub)", default_branch)
-
 def update_file_json(path, obj, message, branch):
-    """Validate + pretty-write JSON to path."""
-    # ensure obj is JSON-serializable
     text = json.dumps(obj, indent=2, ensure_ascii=False)
     return update_file_text(path, text, message, branch)
 
-def extract_json_after_command(raw: str):
-    """
-    Accept either:
-      /update live { ...json... }
-      or /update live followed by a fenced code block:
-        ```json
-        { ... }
-        ```
-    Returns (obj, error_message_or_None).
-    """
-    s = (raw or "").strip()
-
-    # Prefer fenced code block first
-    if "```" in s:
-        parts = s.split("```", 2)  # split once
-        if len(parts) >= 3:
-            first = parts[1].strip().lower()
-            payload = parts[2] if first.startswith("json") else parts[1]
-            if "```" in payload:
-                payload = payload.split("```", 1)[0]
-            try:
-                return json.loads(payload), None
-            except Exception as e:
-                return None, f"Invalid JSON in code block: {e}"
-
-    # Inline JSON on same line
-    start = s.find("{")
-    end = s.rfind("}")
-    if start != -1 and end != -1 and end > start:
-        try:
-            return json.loads(s[start:end+1]), None
-        except Exception as e:
-            return None, f"Invalid JSON after command: {e}"
-
-    return None, "No JSON found. Include JSON inline like: /update live { ... }  OR use a fenced code block (json on the first fence line)."
-
 def open_pr(head_branch, base_branch, title, body=""):
-    r = api("POST", "/pulls", json={
-        "title": title, "head": head_branch, "base": base_branch, "body": body
-    })
+    r = api("POST", "/pulls", json={"title": title, "head": head_branch, "base": base_branch, "body": body})
     r.raise_for_status()
     return r.json()
 
 def merge_pr(pr_number, commit_title=None):
-    """Attempt to merge the PR (squash). Returns (merged_bool, status_text)."""
     payload = {"merge_method": "squash"}
     if commit_title:
         payload["commit_title"] = commit_title
@@ -253,9 +196,7 @@ def merge_pr(pr_number, commit_title=None):
     return False, f"{r.status_code}: {r.text[:150]}"
 
 def dispatch_workflow(workflow_filename: str, ref_branch: str):
-    """Trigger a workflow_dispatch on the given workflow file."""
-    r = api("POST", f"/actions/workflows/{workflow_filename}/dispatches",
-            json={"ref": ref_branch})
+    r = api("POST", f"/actions/workflows/{workflow_filename}/dispatches", json={"ref": ref_branch})
     return r.status_code in (201, 204), r.status_code
 
 def find_issue_by_title(title):
@@ -283,7 +224,7 @@ def latest_pages_build():
     r = SESSION.get(f"{API}/repos/{GH_OWNER}/{GH_REPO}/pages/builds/latest")
     return r.json() if r.status_code == 200 else None
 
-# ---------- Make webhook test ----------
+# ---------- Make webhook ----------
 def post_to_make(payload: dict):
     url = os.getenv("MAKE_WEBHOOK_URL")
     if not url:
@@ -298,18 +239,14 @@ def handle_wire_make(issue_number: int):
         "repo": f"{GH_OWNER}/{GH_REPO}",
         "ts": datetime.datetime.utcnow().isoformat() + "Z"
     })
-    comment_issue(issue_number,
+    comment_issue(
+        issue_number,
         f"✅ Make webhook reached successfully ({msg})." if ok
-        else f"❌ Could not reach Make webhook ({msg}). Add repo secret `MAKE_WEBHOOK_URL`."
+        else f"❌ Could not reach Make webhook ({msg}). Add repo secret MAKE_WEBHOOK_URL."
     )
 
-# ---------- Site ensure helpers ----------
+# ---------- Site ensure / starter files ----------
 def ensure_file(default_branch, rel_path, starter_obj, auto_merge=True):
-    """
-    Ensure a file exists on the default branch; if missing, open a PR adding it.
-    If auto_merge=True, immediately merge the PR (requires PR permissions).
-    Returns tuple: (state, pr_url_or_None) where state in {'exists','pr_opened','merged'}.
-    """
     resp = get_contents(rel_path, ref=default_branch)
     if resp.status_code == 200:
         return "exists", None
@@ -318,30 +255,29 @@ def ensure_file(default_branch, rel_path, starter_obj, auto_merge=True):
     try:
         create_branch(default_branch, branch)
     except Exception:
-        pass  # branch may already exist
+        pass
 
-    put_contents(
-        rel_path,
-        json.dumps(starter_obj, indent=2).encode("utf-8"),
-        f"chore(agent): add starter {rel_path}",
-        branch
-    )
-    pr = open_pr(
-        branch,
-        default_branch,
-        f"Agent: add starter {os.path.basename(rel_path)}",
-        f"Adds minimal `{rel_path}` so the site widget renders."
-    )
+    put_contents(rel_path, json.dumps(starter_obj, indent=2).encode("utf-8"),
+                 f"chore(agent): add starter {rel_path}", branch)
+    pr = open_pr(branch, default_branch, f"Agent: add starter {os.path.basename(rel_path)}",
+                 f"Adds minimal {rel_path} so the site widget renders.")
     pr_url = pr.get("html_url")
     if auto_merge:
-        merged, _status = merge_pr(pr.get("number"))
+        merged, _ = merge_pr(pr.get("number"))
         return ("merged" if merged else "pr_opened"), pr_url
     return "pr_opened", pr_url
 
 def ensure_site(default_branch):
     """Ensure core site data files exist (configurable via agent/config.yml)."""
     load_cfg()
-    want = CFG.get("site", {}).get("ensure_files", ["site/data/table.json", "site/data/live.json"])
+    # extend ensure_files with new data files
+    want = CFG.get("site", {}).get("ensure_files", [
+        "site/data/table.json",
+        "site/data/live.json",
+        "site/data/fixtures.json",
+        "site/data/results.json",
+        "site/data/stats.json"
+    ])
     results = []
     for path in want:
         starter = {"updated": datetime.datetime.utcnow().isoformat() + "Z"}
@@ -352,27 +288,98 @@ def ensure_site(default_branch):
             }]
         if path.endswith("live.json"):
             starter["text"] = "Waiting for next match…"
+        if path.endswith("fixtures.json"):
+            starter["fixtures"] = []   # [{"date":"2025-09-12","opp":"Borough","home":true,"ko":"14:00"}]
+        if path.endswith("results.json"):
+            starter["results"] = []    # [{"date":"2025-09-09","opp":"Borough","score":"2-1","scorers":["Smith 34","Jones 78"]}]
+        if path.endswith("stats.json"):
+            starter["stats"] = {}      # {"top_scorer":{"name":"-","goals":0}, "clean_sheets":0, ...}
         state, pr_url = ensure_file(default_branch, path, starter, auto_merge=True)
         results.append((path, state, pr_url))
-    return results  # [(path, 'exists'|'pr_opened'|'merged', pr_url|None)]
+    return results
 
-# ---------- Help text (reads config) ----------
+# ---------- Repo writers for setup ----------
+def repo_write_text(path, text, message, branch):
+    return update_file_text(path, text, message, branch)
+
+def setup_apps_script_files(default_branch):
+    repo_write_text("apps_script/Code.gs", APPS_SCRIPT_CODE_GS,
+                    "chore(agent): add Apps Script listener Code.gs", default_branch)
+    repo_write_text("apps_script/appsscript.json", APPS_SCRIPT_MANIFEST,
+                    "chore(agent): add Apps Script manifest", default_branch)
+    repo_write_text("apps_script/README.md", APPS_SCRIPT_README,
+                    "docs(agent): add Apps Script README", default_branch)
+
+def setup_make_blueprints(default_branch):
+    repo_write_text("make/blueprints/gotm.json", MAKE_BLUEPRINT_GOTM,
+                    "chore(agent): add Make blueprint (GOTM)", default_branch)
+    repo_write_text("make/blueprints/live.json", MAKE_BLUEPRINT_LIVE,
+                    "chore(agent): add Make blueprint (Live→GitHub)", default_branch)
+
+# ---------- JSON extractor ----------
+def extract_json_after_command(raw: str):
+    """
+    Accept either:
+      /update thing { ...json... }
+      or /update thing followed by a fenced JSON block.
+    Returns (obj, error_message_or_None).
+    """
+    s = (raw or "").strip()
+
+    # Prefer fenced block
+    if "```" in s:
+        parts = s.split("```", 2)
+        if len(parts) >= 3:
+            first = parts[1].strip().lower()
+            payload = parts[2] if first.startswith("json") else parts[1]
+            if "```" in payload:
+                payload = payload.split("```", 1)[0]
+            try:
+                return json.loads(payload), None
+            except Exception as e:
+                return None, f"Invalid JSON in code block: {e}"
+
+    # Inline JSON on same line
+    start = s.find("{")
+    end = s.rfind("}")
+    if start != -1 and end != -1 and end > start:
+        try:
+            return json.loads(s[start:end+1]), None
+        except Exception as e:
+            return None, f"Invalid JSON after command: {e}"
+
+    return None, "No JSON found. Include JSON inline like: /update live { ... } or use a fenced JSON code block."
+
+# ---------- Help text ----------
 def render_help():
     load_cfg()
     tz = CFG.get("timezone", "Europe/London")
-    files = CFG.get("site", {}).get("ensure_files", ["site/data/table.json", "site/data/live.json"])
+    files = CFG.get("site", {}).get("ensure_files", [
+        "site/data/table.json",
+        "site/data/live.json",
+        "site/data/fixtures.json",
+        "site/data/results.json",
+        "site/data/stats.json"
+    ])
     gotm = CFG.get("gotm", {}) or {}
     window = gotm.get("vote_window_days", 7)
     channels = ", ".join(gotm.get("channels", [])) or "—"
     return (
-        "**Agent commands**\n"
+        "Agent commands\n"
         "- `/help` — show this help\n"
         "- `/status` — repo + Pages status\n"
         "- `/ensure site` — ensure site data files (opens PRs if missing; auto-merges)\n"
         "- `/wire make` — send a test_ping to your Make webhook\n"
+        "- `/setup apps` — add Apps Script listener files to repo\n"
+        "- `/setup make` — add Make.com blueprint JSONs to repo\n"
+        "- `/update live` … JSON\n"
+        "- `/update table` … JSON\n"
+        "- `/update fixtures` … JSON\n"
+        "- `/update results` … JSON\n"
+        "- `/update stats` … JSON\n"
         "- `/gotm open` — (placeholder) open Goal of the Month voting\n"
         "- `/gotm close` — (placeholder) close voting & compute winner\n\n"
-        "**Current config**\n"
+        "Current config\n"
         f"- timezone: `{tz}`\n"
         f"- ensure_files: `{', '.join(files)}`\n"
         f"- GOTM window: `{window}` days\n"
@@ -393,23 +400,22 @@ def handle_command(cmd: str, issue_number: int):
     if c in ("/status", "status"):
         pages = latest_pages_build()
         msg = [
-            f"**Agent status for `{GH_OWNER}/{GH_REPO}`**",
-            f"- Default branch: `{default_branch}`",
-            f"- Pages build: `{pages.get('status')}` at `{pages.get('updated_at')}`" if pages else "- Pages build: (not available yet)"
+            f"Agent status for {GH_OWNER}/{GH_REPO}",
+            f"- Default branch: {default_branch}",
+            f"- Pages build: {pages.get('status')} at {pages.get('updated_at')}" if pages else "- Pages build: (not available yet)"
         ]
         comment_issue(issue_number, "\n".join(msg)); return
 
     if c in ("/ensure", "/ensure site"):
         res = ensure_site(default_branch)
-        out = ["**Ensure site files**"]
+        out = ["Ensure site files"]
         for path, state, pr in res:
             if state == "exists":
-                out.append(f"✅ `{path}` exists")
+                out.append(f"✅ {path} exists")
             elif state == "merged":
-                out.append(f"✅ `{path}` added & merged")
+                out.append(f"✅ {path} added & merged")
             else:
-                out.append(f"🆕 `{path}` added — PR: {pr}")
-        # trigger deploy after ensuring files
+                out.append(f"🆕 {path} added — PR: {pr}")
         ok, code = dispatch_workflow("site-deploy.yml", default_branch)
         out.append(f"\nDeploy trigger: {'✅ sent' if ok else f'❌ ({code})'}")
         comment_issue(issue_number, "\n".join(out)); return
@@ -417,99 +423,79 @@ def handle_command(cmd: str, issue_number: int):
     if c in ("/wire make", "/test make"):
         handle_wire_make(issue_number); return
 
-    if c.startswith("/gotm open"):
-        window = CFG.get("gotm", {}).get("vote_window_days", 7)
-        comment_issue(issue_number, f"📣 GOTM: will open voting for this month (window {window} days). Wire Make/Apps Script to execute."); return
-
-    if c.startswith("/gotm close"):
-        comment_issue(issue_number, "⛔ GOTM: will close voting and compute winner. Wire Make/Apps Script to execute."); return
-
-# /update live  {json}  or with a ```json``` block
-    if c.startswith("/update live"):
-        obj, err = extract_json_after_command(cmd)
-        if err:
-            comment_issue(issue_number, f"❌ {err}")
+    # ---- Update JSON files ----
+    path_map = {
+        "/update live":      "site/data/live.json",
+        "/update table":     "site/data/table.json",
+        "/update fixtures":  "site/data/fixtures.json",
+        "/update results":   "site/data/results.json",
+        "/update stats":     "site/data/stats.json",
+    }
+    for key, path in path_map.items():
+        if c.startswith(key):
+            obj, err = extract_json_after_command(cmd)
+            if err:
+                comment_issue(issue_number, f"❌ {err}"); return
+            try:
+                update_file_json(path, obj, f"chore(agent): update {os.path.basename(path)} via issue command", default_branch)
+                dispatch_workflow("site-deploy.yml", default_branch)
+                comment_issue(issue_number, f"✅ Updated `{path}` and triggered deploy.")
+            except Exception as e:
+                comment_issue(issue_number, f"❌ Failed to update {path}: {e}")
             return
-        repo = get_repo(); default_branch = repo.get("default_branch", "main")
-        try:
-            update_file_json(
-                "site/data/live.json",
-                obj,
-                "chore(agent): update live.json via issue command",
-                default_branch
-            )
-            # (optional) trigger deploy
-            dispatch_workflow("site-deploy.yml", default_branch)
-            comment_issue(issue_number, "✅ Updated `site/data/live.json` and triggered deploy.")
-        except Exception as e:
-            comment_issue(issue_number, f"❌ Failed to update live.json: {e}")
-        return
 
-    # /update table  {json}  (expects whole table.json object)
-    if c.startswith("/update table"):
-        obj, err = extract_json_after_command(cmd)
-        if err:
-            comment_issue(issue_number, f"❌ {err}")
-            return
-        repo = get_repo(); default_branch = repo.get("default_branch", "main")
-        try:
-            update_file_json(
-                "site/data/table.json",
-                obj,
-                "chore(agent): update table.json via issue command",
-                default_branch
-            )
-            dispatch_workflow("site-deploy.yml", default_branch)
-            comment_issue(issue_number, "✅ Updated `site/data/table.json` and triggered deploy.")
-        except Exception as e:
-            comment_issue(issue_number, f"❌ Failed to update table.json: {e}")
-        return
-
-      if c.startswith("/setup apps"):
-        default_branch = get_repo().get("default_branch","main")
+    # ---- Setup commands ----
+    if c.startswith("/setup apps"):
         try:
             setup_apps_script_files(default_branch)
-            comment_issue(issue_number,
-                "✅ Apps Script files added in `apps_script/`.\n\n"
-                "Deploy steps:\n"
-                "1) Open Google Sheet → Extensions → Apps Script → paste `Code.gs` and `appsscript.json` from repo.\n"
-                "2) Deploy → New deployment → Web app (execute as *Me*, access *Anyone with the link*).\n"
-                "3) (Optional) Add the Web App URL into repo secret `APPS_WEBAPP_URL`.")
+            comment_issue(
+                issue_number,
+                "✅ Apps Script files added under `apps_script/`.\n\n"
+                "Deploy:\n"
+                "1) Open your Google Sheet → Extensions → Apps Script.\n"
+                "2) Add Code.gs and appsscript.json from the repo.\n"
+                "3) Deploy → New deployment → Web app (Execute as: Me; Access: Anyone with the link).\n"
+                "4) (Optional) Save the Web App URL in repo secret APPS_WEBAPP_URL."
+            )
         except Exception as e:
             comment_issue(issue_number, f"❌ Failed to write Apps Script files: {e}")
         return
 
     if c.startswith("/setup make"):
-        default_branch = get_repo().get("default_branch","main")
         try:
             setup_make_blueprints(default_branch)
-            comment_issue(issue_number,
-                "✅ Make blueprints added in `make/blueprints/`.\n\n"
-                "Import steps:\n"
-                "1) In Make.com, Scenarios → Import blueprint → upload `make/blueprints/gotm.json` and `make/blueprints/live.json`.\n"
-                "2) Authorize Google Sheets and GitHub modules when prompted.\n"
-                "3) In the HTTP module body, replace `REPLACE_OWNER/REPLACE_REPO/REPLACE_ISSUE` with this repo and a control issue number.\n"
-                "4) Copy each scenario’s Custom Webhook URL into **repo secret** `MAKE_WEBHOOK_URL` (or keep your existing one).\n"
-                "5) Run the scenario once to initialize.")
+            comment_issue(
+                issue_number,
+                "✅ Make blueprints added under `make/blueprints/`.\n\n"
+                "Import:\n"
+                "1) In Make.com → Scenarios → Import blueprint → choose the JSONs.\n"
+                "2) Authorize Google Sheets & GitHub modules when prompted.\n"
+                "3) In the HTTP module URL, replace REPLACE_OWNER/REPLACE_REPO/REPLACE_ISSUE with this repo and a control issue number.\n"
+                "4) (Optional) Put the scenario’s Custom Webhook URL into repo secret MAKE_WEBHOOK_URL.\n"
+                "5) Run once to initialize."
+            )
         except Exception as e:
             comment_issue(issue_number, f"❌ Failed to write Make blueprints: {e}")
         return
-    
+
+    if c.startswith("/gotm open"):
+        window = CFG.get("gotm", {}).get("vote_window_days", 7)
+        comment_issue(issue_number, f"GOTM: will open voting for this month (window {window} days). Wire Make/Apps Script to execute."); return
+
+    if c.startswith("/gotm close"):
+        comment_issue(issue_number, "GOTM: will close voting and compute winner. Wire Make/Apps Script to execute."); return
+
     comment_issue(issue_number, "Unknown command. Try `/help`.")
 
-# ---------- Bootstrap (one-click bring-up) ----------
+# ---------- Bootstrap ----------
 def bootstrap():
-    """Auto-fix everything we can, auto-merge, trigger deploy, then post/update a 'Launch checklist' issue."""
     repo = get_repo()
     default_branch = repo.get("default_branch", "main")
     load_cfg()
 
-    ensured = ensure_site(default_branch)  # auto-merges when needed
-
-    # Trigger deploy regardless (safe if unchanged)
+    ensured = ensure_site(default_branch)
     deploy_ok, deploy_code = dispatch_workflow("site-deploy.yml", default_branch)
 
-    # Test Make webhook
     make_ok, make_msg = post_to_make({
         "type": "test_ping",
         "from": "GitHubAgent",
@@ -517,50 +503,35 @@ def bootstrap():
         "ts": datetime.datetime.utcnow().isoformat() + "Z"
     })
 
-    # Pages status (informational)
     pages = latest_pages_build()
-    pages_line = f"- Pages build: `{pages.get('status')}` at `{pages.get('updated_at')}`" if pages else "- Pages build: (not available yet)"
+    pages_line = f"- Pages build: {pages.get('status')} at {pages.get('updated_at')}" if pages else "- Pages build: (not available yet)"
 
-    # Build checklist body
     lines = []
-    lines.append("## 🚀 Launch checklist")
-    lines.append(f"- Repo: `{GH_OWNER}/{GH_REPO}`  |  Default branch: `{default_branch}`")
+    lines.append("## Launch checklist")
+    lines.append(f"- Repo: {GH_OWNER}/{GH_REPO}  |  Default branch: {default_branch}")
     lines.append(pages_line)
     lines.append("")
     lines.append("### Site data")
     for path, state, pr in ensured:
         if state == "exists":
-            lines.append(f"- ✅ `{path}` — exists")
+            lines.append(f"- ✅ {path} — exists")
         elif state == "merged":
-            lines.append(f"- ✅ `{path}` — added & merged")
+            lines.append(f"- ✅ {path} — added & merged")
         else:
-            lines.append(f"- 🆕 `{path}` — PR: {pr}")
+            lines.append(f"- 🆕 {path} — PR: {pr}")
     lines.append("")
     lines.append("### Pages deploy")
     lines.append(f"- Trigger sent: {'✅' if deploy_ok else f'❌ ({deploy_code})'}")
     lines.append("")
     lines.append("### Make webhook")
     lines.append(f"- {'✅ Reachable' if make_ok else '❌ Not reachable'} ({make_msg})")
-    if not make_ok:
-        lines.append("  - Add repo secret **MAKE_WEBHOOK_URL** with your Custom Webhook URL.")
-    lines.append("")
-    lines.append("### Config (from agent/config.yml)")
-    tz = CFG.get("timezone", "Europe/London")
-    files = ", ".join(CFG.get("site", {}).get("ensure_files", [])) or "site/data/table.json, site/data/live.json"
-    gotm = CFG.get("gotm", {}) or {}
-    window = gotm.get("vote_window_days", 7)
-    channels = ", ".join(gotm.get("channels", [])) or "—"
-    lines.append(f"- timezone: `{tz}`")
-    lines.append(f"- ensure_files: `{files}`")
-    lines.append(f"- GOTM window: `{window}` days")
-    lines.append(f"- GOTM channels: `{channels}`")
 
     title = "Agent: Launch checklist"
     existing = find_issue_by_title(title)
     body = "\n".join(lines)
     if existing:
         update_issue_body(existing["number"], body)
-        comment_issue(existing["number"], "🔁 Checklist updated.")
+        comment_issue(existing["number"], "Checklist updated.")
     else:
         create_issue(title, body)
 
@@ -569,7 +540,6 @@ def main():
     mode = (sys.argv[sys.argv.index("--mode")+1] if "--mode" in sys.argv else "").strip()
 
     if mode == "listen":
-        # Respond to ANY issue open/edit or ANY new comment (no label required)
         event_path = os.getenv("GITHUB_EVENT_PATH")
         if not event_path or not os.path.exists(event_path):
             print("No event payload found."); return
@@ -604,5 +574,5 @@ if __name__ == "__main__":
         load_cfg()
         main()
     except Exception as e:
-        print("❌ Agent error:", e)
+        print("Agent error:", e)
         sys.exit(1)
