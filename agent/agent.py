@@ -181,6 +181,18 @@ def update_file_text(path, text, message, branch):
     r.raise_for_status()
     return r.json()
 
+def repo_write_text(path, text, message, branch):
+    return update_file_text(path, text, message, branch)
+
+def setup_apps_script_files(default_branch):
+    repo_write_text("apps_script/Code.gs", APPS_SCRIPT_CODE_GS, "chore(agent): add Apps Script listener Code.gs", default_branch)
+    repo_write_text("apps_script/appsscript.json", APPS_SCRIPT_MANIFEST, "chore(agent): add Apps Script manifest", default_branch)
+    repo_write_text("apps_script/README.md", APPS_SCRIPT_README, "docs(agent): add Apps Script README", default_branch)
+
+def setup_make_blueprints(default_branch):
+    repo_write_text("make/blueprints/gotm.json", MAKE_BLUEPRINT_GOTM, "chore(agent): add Make blueprint (GOTM)", default_branch)
+    repo_write_text("make/blueprints/live.json", MAKE_BLUEPRINT_LIVE, "chore(agent): add Make blueprint (Live→GitHub)", default_branch)
+
 def update_file_json(path, obj, message, branch):
     """Validate + pretty-write JSON to path."""
     # ensure obj is JSON-serializable
