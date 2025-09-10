@@ -94,16 +94,10 @@ def extract_json_after_command(raw: str):
 
     # Prefer fenced code block first
     if "```" in s:
-        # split only on the first two fences to keep payload intact
-        parts = s.split("```", 2)
+        parts = s.split("```", 2)  # split only once
         if len(parts) >= 3:
             first = parts[1].strip().lower()
-            # handle ```json ... ``` or plain ``` ... ```
-            if first.startswith("json"):
-                payload = parts[2]
-            else:
-                payload = parts[1]
-            # if a trailing fence exists, trim to it
+            payload = parts[2] if first.startswith("json") else parts[1]
             if "```" in payload:
                 payload = payload.split("```", 1)[0]
             try:
@@ -120,6 +114,7 @@ def extract_json_after_command(raw: str):
         except Exception as e:
             return None, f"Invalid JSON after command: {e}"
 
+    # NOTE: no backtick characters here—just plain text.
     return None, "No JSON found. Include JSON after the command, e.g. /update live { ... } or use a fenced code block: three backticks, the word json, newline, { ... }, newline, three backticks.”
 
 def open_pr(head_branch, base_branch, title, body=""):
