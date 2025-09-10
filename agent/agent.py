@@ -1,12 +1,119 @@
 import os, base64, json, datetime, sys, requests, yaml
 
+# ===== Apps Script + Make blueprint constants (ADD #1) =====
+APPS_SCRIPT_CODE_GS = r"""/* Apps Script Web App (listener) */
+function doPost(e) {
+  try {
+    const body = JSON.parse(e.postData.contents || "{}");
+    const type = (body.type || "").toLowerCase();
+    const now = new Date().toISOString();
+
+    if (type === "test_ping") {
+      return ContentService.createTextOutput(JSON.stringify({ok:true, ts: now}))
+                           .setMimeType(ContentService.MimeType.JSON);
+    }
+
+    if (type === "gotm_vote") {
+      const sheetName = body.sheetName || "GOTM_Votes";
+      const ss = SpreadsheetApp.getActiveSpreadsheet();
+      const sh = ss.getSheetByName(sheetName) || ss.insertSheet(sheetName);
+      sh.appendRow([now, body.player || "", body.source || "", body.meta ? JSON.stringify(body.meta) : ""]);
+      return ContentService.createTextOutput(JSON.stringify({ok:true, wrote:true}))
+                           .setMimeType(ContentService.MimeType.JSON);
+    }
+
+    if (type === "live_update") {
+      const sheetName = body.sheetName || "LiveLog";
+      const ss = SpreadsheetApp.getActiveSpreadsheet();
+      const sh = ss.getSheetByName(sheetName) || ss.insertSheet(sheetName);
+      sh.appendRow([now, body.text || ""]);
+      return ContentService.createTextOutput(JSON.stringify({ok:true, wrote:true}))
+                           .setMimeType(ContentService.MimeType.JSON);
+    }
+
+    return ContentService.createTextOutput(JSON.stringify({ok:false, msg:"unknown type"}))
+                         .setMimeType(ContentService.MimeType.JSON);
+  } catch (err) {
+    return ContentService.createTextOutput(JSON.stringify({ok:false, error:String(err)}))
+                         .setMimeType(ContentService.MimeType.JSON);
+  }
+}
+
+/* Optional: outbound webhook to Make.com (store URL in Script Properties as MAKE_WEBHOOK_URL) */
+function postToMake(payload) {
+  const url = PropertiesService.getScriptProperties().getProperty("MAKE_WEBHOOK_URL");
+  if (!url) throw new Error("MAKE_WEBHOOK_URL not set in Script Properties");
+  const res = UrlFetchApp.fetch(url, {method:"post", contentType:"application/json", payload: JSON.stringify(payload)});
+  return {status: res.getResponseCode(), body: res.getContentText()};
+}
+"""
+
+APPS_SCRIPT_MANIFEST = r"""{
+  "timeZone": "Europe/London",
+  "dependencies": {},
+  "exceptionLogging": "STACKDRIVER",
+  "runtimeVersion": "V8"
+}
+"""
+
+APPS_SCRIPT_README = r"""# Apps Script Web App (Listener)
+
+## Deploy (3 steps)
+1. Create a new Google Apps Script project attached to your target Google Sheet.
+2. Add `Code.gs` and `appsscript.json` (from this folder).
+3. Deploy > **New deployment** > **Web app**
+   - Execute as: **Me**
+   - Who has access: **Anyone with the link**
+   - Copy the **Web app URL** and put it in your repo secret `APPS_WEBAPP_URL` (optional).
+
+### What it does
+- `test_ping` returns `{ok:true}` (health check).
+- `gotm_vote` appends a row to `GOTM_Votes` sheet.
+- `live_update` appends a row to `LiveLog` sheet.
+
+### Optional
+- In **Project Settings → Script properties**, set `MAKE_WEBHOOK_URL` to enable `postToMake(payload)`.
+"""
+
+MAKE_BLUEPRINT_GOTM = r"""{
+  "name": "GOTM votes → Google Sheets",
+  "version": 1,
+  "modules": [
+    {"id": 1, "name": "Webhook", "type": "hook", "metadata": {"label": "Custom Webhook (gotm_vote)"}},
+    {"id": 2, "name": "Google Sheets - Add row", "type": "google-sheets-add-row",
+      "metadata": {"label": "Append row to GOTM_Votes"},
+      "mapper": {"spreadsheet": "SELECT_AT_IMPORT", "sheet": "GOTM_Votes",
+                 "values": [{"value": "{{now}}"}, {"value": "{{player}}"}, {"value": "{{source}}"}, {"value": "{{json}}"}]}}
+  ],
+  "links": [{"from_module":1,"to_module":2}]
+}
+"""
+
+MAKE_BLUEPRINT_LIVE = r"""{
+  "name": "Live update → GitHub → Deploy",
+  "version": 1,
+  "modules": [
+    {"id": 1, "name": "Webhook", "type": "hook", "metadata": {"label": "Custom Webhook (live_update)"}},
+    {"id": 2, "name": "HTTP - Make a request", "type": "http",
+      "metadata": {"label": "Trigger GitHub Issue comment"},
+      "mapper": {"url": "https://api.github.com/repos/REPLACE_OWNER/REPLACE_REPO/issues/REPLACE_ISSUE/comments",
+                 "method": "POST",
+                 "headers": [{"name":"Authorization","value":"Bearer {{secrets.AGENT_GH_TOKEN}}"},
+                             {"name":"Accept","value":"application/vnd.github+json"}],
+                 "body": "{\"body\":\"/update live {\\\"updated\\\":\\\"{{now}}\\\",\\\"text\\\":\\\"{{text}}\\\"}\"}"}}
+  ],
+  "links": [{"from_module":1,"to_module":2}]
+}
+"""
+# ===== End of ADD #1 =====
+
 # ---------- Environment ----------
 repo_env = os.getenv("GITHUB_REPOSITORY", "")
 env_owner, env_repo = (repo_env.split("/", 1) + ["", ""])[:2]
 GH_OWNER = os.getenv("GH_OWNER") or env_owner or "your-username"
 GH_REPO  = os.getenv("GH_REPO")  or env_repo  or "your-repo"
 TOKEN = os.getenv("AGENT_GH_TOKEN") or os.getenv("GITHUB_TOKEN", "")
-API      = "https://api.github.com"
+API = "https://api.github.com"
 
 SESSION = requests.Session()
 if TOKEN:
