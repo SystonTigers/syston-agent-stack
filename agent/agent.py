@@ -84,17 +84,17 @@ def extract_json_after_command(raw: str):
     """
     Accept either:
       /update live { ...json... }
-      /update live  (followed by a fenced code block):
+      or /update live followed by a fenced code block:
         ```json
         { ... }
         ```
-    Returns: (obj, error_message_or_None)
+    Returns (obj, error_message_or_None).
     """
     s = (raw or "").strip()
 
     # Prefer fenced code block first
     if "```" in s:
-        parts = s.split("```", 2)  # split only once
+        parts = s.split("```", 2)  # split once
         if len(parts) >= 3:
             first = parts[1].strip().lower()
             payload = parts[2] if first.startswith("json") else parts[1]
@@ -105,7 +105,7 @@ def extract_json_after_command(raw: str):
             except Exception as e:
                 return None, f"Invalid JSON in code block: {e}"
 
-    # Inline JSON on the same line as the command
+    # Inline JSON on same line
     start = s.find("{")
     end = s.rfind("}")
     if start != -1 and end != -1 and end > start:
@@ -114,8 +114,7 @@ def extract_json_after_command(raw: str):
         except Exception as e:
             return None, f"Invalid JSON after command: {e}"
 
-    # NOTE: no backtick characters here—just plain text.
-    return None, "No JSON found. Include JSON after the command, e.g. /update live { ... } or use a fenced code block: three backticks, the word json, newline, { ... }, newline, three backticks.”
+    return None, "No JSON found. Include JSON inline like: /update live { ... }  OR use a fenced code block (json on the first fence line)."
 
 def open_pr(head_branch, base_branch, title, body=""):
     r = api("POST", "/pulls", json={
